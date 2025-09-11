@@ -2,6 +2,7 @@ import streamlit as st
 import whisper
 import tempfile
 
+# --- En-tête moderne ---
 st.markdown(
     """
     <div style="
@@ -48,6 +49,7 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
 st.set_page_config(page_title="Transcription Audio", layout="centered")
 
 st.title("🎙️ Transcription Audio avec Whisper")
@@ -74,5 +76,3 @@ if uploaded_file is not None:
     st.success("✅ Transcription terminée")
     st.subheader("Texte transcrit :")
     st.write(result["text"])
-
-
