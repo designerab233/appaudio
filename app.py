@@ -2,13 +2,12 @@ import streamlit as st
 import whisper
 import tempfile
 
-# --- En-tête moderne ---
-# --- En-tête style image ---
+# --- En-tête style inversé ---
 st.markdown(
     """
     <div style="
-        background-color:black;
-        color:white;
+        background-color:white;
+        color:black;
         padding:20px;
         text-align:center;
         font-size:28px;
@@ -20,6 +19,7 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
 
 st.set_page_config(page_title="Transcription Audio", layout="centered")
 
@@ -47,4 +47,5 @@ if uploaded_file is not None:
     st.success("✅ Transcription terminée")
     st.subheader("Texte transcrit :")
     st.write(result["text"])
+
 
