@@ -1,14 +1,14 @@
+# app.py
+import os
+import tempfile
+import subprocess
+from pathlib import Path
+
 import streamlit as st
 import whisper
-import tempfile
-from pathlib import Path
-import datetime
-import io
 
-# CONFIG (doit être appelé avant les autres éléments Streamlit visibles)
+# ------------------ Configuration de la page ------------------
 st.set_page_config(page_title="Transcription Audio", layout="centered")
-
-# --- En-tête style inversé ---
 st.markdown(
     """
     <div style="
@@ -19,91 +19,127 @@ st.markdown(
         font-size:28px;
         font-weight:bold;
         letter-spacing:2px;
-        border-radius:8px;
-    ">
+        ">
         ✨ Created by Abdessamad Karim ✨
     </div>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
 st.title("🎙️ Transcription Audio avec Whisper")
 
-# Choix du modèle (tu peux proposer d'autres tailles : tiny, base, small, medium, large)
-model_size = st.selectbox("Choisir la taille du modèle (impacte précision + vitesse)", ["base", "small", "medium"], index=0)
+# ------------------ Utilitaires ------------------
+def has_ffmpeg() -> bool:
+    """Vérifie si ffmpeg est disponible dans le PATH."""
+    try:
+        subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except FileNotFoundError:
+        return False
 
-use_timestamps = st.checkbox("Inclure timestamps (segments)", value=False)
-cpu_mode = st.checkbox("Forcer CPU (fp16 désactivé) — utile si pas de GPU", value=True)
+def convert_to_wav(input_path: str, output_path: str) -> None:
+    """Convertit un fichier audio en WAV 16-bit 16k/44.1k via ffmpeg."""
+    # Utilise ffmpeg pour convertir en wav (PCM S16LE)
+    cmd = [
+        "ffmpeg",
+        "-y",  # overwrite
+        "-i", input_path,
+        "-ar", "16000",  # sample rate 16 kHz (bon pour la transcription)
+        "-ac", "1",      # mono
+        "-sample_fmt", "s16",
+        output_path
+    ]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
 
+# ------------------ Chargement du modèle ------------------
 @st.cache_resource
-def load_model(size: str):
-    """Charge et met en cache le modèle Whisper."""
-    return whisper.load_model(size)
-
-with st.spinner("Chargement du modèle..."):
-    model = load_model(model_size)
-
-uploaded_file = st.file_uploader("Choisissez un fichier audio (mp3, wav, m4a, etc.)", type=["mp3", "wav", "m4a", "ogg", "flac"])
-
-if uploaded_file is not None:
-    # Affiche le lecteur audio
+def load_model(name: str = "base"):
+    """Charge et met en cache le modèle Whisper choisi."""
     try:
-        st.audio(uploaded_file)
-    except Exception:
-        # si st.audio échoue, on ignore (rare)
-        pass
-
-    # Détermine l'extension du fichier uploadé (sécurisée)
-    original_name = getattr(uploaded_file, "name", None) or "audio"
-    ext = Path(original_name).suffix if Path(original_name).suffix else ".wav"
-
-    # Écrit le fichier uploadé dans un fichier temporaire (Whisper / ffmpeg lira ce fichier)
-    uploaded_file.seek(0)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        tmp.write(uploaded_file.read())
-        temp_audio_path = tmp.name
-
-    st.info("⏳ Transcription en cours...")
-    try:
-        with st.spinner("Transcription en cours (cela peut prendre quelques secondes/minutes selon la taille du modèle et du fichier)..."):
-            # Si CPU forcé, désactiver fp16
-            result = model.transcribe(temp_audio_path, fp16=(not cpu_mode and model.device.type == "cuda"))
+        model = whisper.load_model(name)
+        return model
     except Exception as e:
-        st.error(f"Une erreur est survenue lors de la transcription : {e}")
+        st.error(f"Erreur lors du chargement du modèle: {e}")
+        return None
+
+# Choix du modèle
+st.sidebar.markdown("### ⚙️ Paramètres du modèle")
+model_choice = st.sidebar.selectbox("Taille du modèle Whisper", ["tiny", "base", "small", "medium", "large"], index=1)
+use_fp16 = st.sidebar.checkbox("Utiliser fp16 (si GPU compatible)", value=False)
+
+model = load_model(model_choice)
+if model is None:
+    st.stop()
+
+# ------------------ Upload du fichier ------------------
+uploaded_file = st.file_uploader("Choisissez un fichier audio", type=["mp3", "wav", "m4a", "flac", "ogg", "aac"])
+if uploaded_file is None:
+    st.info("Importez un fichier audio (mp3, wav, m4a, flac, ogg, aac).")
+    st.stop()
+
+# Affichage du player audio
+st.audio(uploaded_file)
+
+# Création d'un fichier temporaire avec le bon suffixe
+original_filename = Path(uploaded_file.name).stem
+suffix = Path(uploaded_file.name).suffix or ".wav"
+
+with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_orig:
+    uploaded_file.seek(0)
+    tmp_orig.write(uploaded_file.read())
+    tmp_orig_path = tmp_orig.name
+
+# Préparation du fichier WAV pour Whisper (si nécessaire)
+wav_path = tmp_orig_path
+converted = False
+if Path(tmp_orig_path).suffix.lower() != ".wav":
+    if has_ffmpeg():
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
+                wav_path = tmp_wav.name
+            convert_to_wav(tmp_orig_path, wav_path)
+            converted = True
+        except subprocess.CalledProcessError:
+            st.warning("La conversion via ffmpeg a échoué. Whisper peut parfois accepter le fichier original, on va essayer.")
+            wav_path = tmp_orig_path
     else:
-        st.success("✅ Transcription terminée")
+        st.warning("ffmpeg n'est pas trouvé sur le système. Whisper prendra le fichier original si possible, sinon installez ffmpeg pour une meilleure compatibilité.")
+        wav_path = tmp_orig_path
 
-        # Affiche le texte transcrit
-        st.subheader("Texte transcrit :")
-        transcript_text = result.get("text", "").strip()
-        st.text_area("Transcription", value=transcript_text, height=300)
+# Bouton pour lancer la transcription
+if st.button("⏳ Lancer la transcription"):
+    try:
+        st.info("Transcription en cours...")
+        # whisper.transcribe accepte souvent différents formats si ffmpeg est installé.
+        # On force fp16 à False si l'utilisateur l'a désactivé ou si le modèle large sur CPU provoque des erreurs.
+        result = model.transcribe(wav_path, fp16=use_fp16)
+        text = result.get("text", "").strip()
 
-        # Si l'utilisateur veut les segments/timestamps, on crée un texte plus détaillé
-        if use_timestamps:
-            segments = result.get("segments", [])
-            seg_lines = []
-            for seg in segments:
-                # format HH:MM:SS.mmm
-                start = str(datetime.timedelta(seconds=int(seg["start"]))) + f"{seg['start']%1:.3f}".replace("0.", ".")
-                end = str(datetime.timedelta(seconds=int(seg["end"]))) + f"{seg['end']%1:.3f}".replace("0.", ".")
-                # Simplifier l'affichage des timestamps
-                seg_lines.append(f"[{seg['start']:.2f}s → {seg['end']:.2f}s] {seg['text'].strip()}")
-            segments_text = "\n".join(seg_lines)
-            st.subheader("Segments (avec timestamps) :")
-            st.text_area("Segments", value=segments_text, height=300)
+        if not text:
+            st.warning("Aucune transcription récupérée (texte vide). Vérifiez le fichier ou essayez un autre modèle.")
+        else:
+            st.success("✅ Transcription terminée")
+            st.subheader("Texte transcrit :")
+            st.write(text)
 
-        # Prépare un fichier téléchargeable (.txt)
-        download_name = f"transcription_{Path(original_name).stem}.txt"
-        out_buf = io.StringIO()
-        out_buf.write(transcript_text + "\n")
-        if use_timestamps:
-            out_buf.write("\n\n--- Segments ---\n")
-            out_buf.write(segments_text)
-        out_buf.seek(0)
-        st.download_button("⬇️ Télécharger la transcription", data=out_buf.getvalue(), file_name=download_name, mime="text/plain")
+            # Bouton pour télécharger la transcription en .txt
+            txt_bytes = text.encode("utf-8")
+            st.download_button(
+                label="⬇️ Télécharger la transcription (.txt)",
+                data=txt_bytes,
+                file_name=f"{original_filename}_transcription.txt",
+                mime="text/plain",
+            )
 
-        # Info supplémentaire (optionnel)
-        st.info(f"Modèle utilisé : {model_size} — Taille approximative du texte : {len(transcript_text.split())} mots")
+            # Optionnel : sauvegarder en local (dans dossier courant) pour debugging / commit
+            save_locally = st.checkbox("Sauvegarder une copie locale du fichier .txt (serveur)", value=False)
+            if save_locally:
+                out_path = Path(f"{original_filename}_transcription.txt").resolve()
+                out_path.write_text(text, encoding="utf-8")
+                st.write(f"Copie sauvegardée sur le serveur : {out_path}")
 
-        # Nettoyage (optionnel) : on peut supprimer le fichier temporaire si on veut,
-        # mais ici on laisse le système s'en occuper ou l'OS le nettoiera.
+    except Exception as e:
+        st.error(f"Une erreur est survenue pendant la transcription : {e}")
+
+# Nettoyage optionnel des fichiers temporaires (on laisse pour debug, mais tu peux supprimer)
+st.caption("Note: des fichiers temporaires sont créés sur le serveur pendant la conversion. Ils sont non supprimés pour faciliter le debug.")
